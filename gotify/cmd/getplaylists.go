@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/gocarina/gocsv"
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 )
@@ -36,16 +37,30 @@ func getPlaylists(userId string) {
 		ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
 	}
 
-	type PartialResponse struct {
-		Href     string          `json:"href"`
-		Limit    int             `json:"limit"`
-		Next     string          `json:"next"`
-		Offset   int             `json:"offset"`
-		Total    int             `json:"total"`
-		Previous *string         `json:"previous"`
-		Rest     json.RawMessage `json:"-"` // Ignore the rest for now
+	type SimplifiedPlaylistObject struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Owner       struct {
+			ID   string          `json:"id"`
+			Rest json.RawMessage `json:"-"`
+		} `json:"owner"`
+		Tracks struct {
+			Href  string `json:"href"`
+			Total int    `json:"total"`
+		} `json:"tracks"`
+		Rest json.RawMessage `json:"-"`
 	}
 
+	type PartialResponse struct {
+		Href   string                     `json:"href"`
+		Limit  int                        `json:"limit"`
+		Next   string                     `json:"next"`
+		Offset int                        `json:"offset"`
+		Total  int                        `json:"total"`
+		Items  []SimplifiedPlaylistObject `json:"items"`
+		Rest   json.RawMessage            `json:"-"`
+	}
 	var url = fmt.Sprintf("https://api.spotify.com/v1/users/%s/playlists", userId)
 
 	resp, err := manager.DoSpotifyAPIRequest(url)
@@ -66,5 +81,36 @@ func getPlaylists(userId string) {
 	}
 
 	fmt.Println("Status:", resp.Status)
-	fmt.Println("Body:", partialResp)
+	playlists := partialResp.Items
+	nextURL := partialResp.Next
+
+	file, _ := os.Create("playlists.csv")
+
+	for nextURL != "" {
+		resp, err := manager.DoSpotifyAPIRequest(nextURL)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			panic(err)
+		}
+
+		var nextResp PartialResponse
+		if err := json.Unmarshal(body, &nextResp); err != nil {
+			panic(err)
+		}
+
+		playlists = append(playlists, nextResp.Items...)
+		nextURL = nextResp.Next
+	}
+
+	partialResp.Items = playlists
+
+	fmt.Println("Playlists:", playlists)
+
+	defer file.Close()
+	gocsv.MarshalFile(&playlists, file)
 }
